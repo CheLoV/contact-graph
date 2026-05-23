@@ -9,31 +9,61 @@ export type ParsedEmail = { address: string; label?: string };
 export type ParsedUrl = { url: string; label?: string };
 
 export type ParsedSocialProfile = {
-  service: string; // 'vk' | 'telegram' | 'facebook' | 'twitter' | 'whatsapp' | …
+  service: string; // 'vk' | 'telegram' | 'facebook' | 'twitter' | 'skype' | 'xmpp' | 'aim' | …
   sourceId: string; // стабильный id для ContactIdentity.sourceId
   handle?: string;
   url?: string;
 };
 
+export type ParsedAddress = {
+  street?: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  country?: string;
+  formatted: string;
+  kind: "home" | "work" | "other";
+  label?: string;
+  latitude?: number;
+  longitude?: number;
+};
+
+export type ParsedAttribute = {
+  key: string; // 'phonetic_first_name' | 'maiden_name' | 'gender' | 'role' | 'lang' | 'tz' | 'show_as' | 'related_name' | 'anniversary' | …
+  value: string;
+  label?: string;
+};
+
+export type UnknownProperty = {
+  property: string; // нормализованное имя (без item-префикса), UPPERCASE
+  rawLine: string;
+};
+
 export type ParsedVCard = {
   uid: string;
   displayName: string;
+  nickname?: string;
   phones: ParsedPhone[];
   emails: ParsedEmail[];
   urls: ParsedUrl[];
   socialProfiles: ParsedSocialProfile[];
+  addresses: ParsedAddress[];
+  categories: string[];
+  attributes: ParsedAttribute[];
+  unknownProperties: UnknownProperty[];
   rawData: string;
   org?: string;
   title?: string;
   note?: string;
-  birthday?: string; // ISO YYYY-MM-DD, только если год >= 1900
+  birthday?: string;
 };
 
 type RawProperty = {
   group?: string;
   name: string;
-  params: Map<string, string[]>; // param name uppercased, значения как есть (без lowercase!)
+  params: Map<string, string[]>; // имя UPPERCASE, значения как есть
   value: string;
+  rawLine: string;
 };
 
 function unescapeValue(input: string): string {
@@ -126,7 +156,6 @@ function parseLine(line: string): RawProperty | null {
     let pname: string;
     let pvalues: string[];
     if (eqIdx === -1) {
-      // Старый формат TEL;HOME → TYPE=HOME
       pname = "TYPE";
       pvalues = [param.trim()];
     } else {
@@ -139,8 +168,7 @@ function parseLine(line: string): RawProperty | null {
       ) {
         rawParam = rawParam.slice(1, -1);
       }
-      // ВНИМАНИЕ: значения параметров НЕ lowercase'им — теряются username'ы (Gluk_70 → gluk_70).
-      // Регистр нормализуется только в местах использования (например, при сравнении TYPE).
+      // ВАЖНО: значения параметров НЕ lowercase'им — теряются username'ы.
       pvalues = rawParam
         .split(",")
         .map((v) => v.trim())
@@ -158,7 +186,7 @@ function parseLine(line: string): RawProperty | null {
   }
   value = unescapeValue(value);
 
-  return { group, name, params, value };
+  return { group, name, params, value, rawLine: line };
 }
 
 const IGNORE_TYPE_TOKENS = new Set([
@@ -191,6 +219,13 @@ function inferLabel(
     return meaningful ?? types[0];
   }
   return undefined;
+}
+
+function inferAddressKind(prop: RawProperty): "home" | "work" | "other" {
+  const types = getTypes(prop);
+  if (types.includes("home")) return "home";
+  if (types.includes("work")) return "work";
+  return "other";
 }
 
 function normalizePhone(raw: string): string {
@@ -233,7 +268,6 @@ function stableUid(
 }
 
 function parseBirthday(raw: string): string | undefined {
-  // Принимаем YYYY-MM-DD; пропускаем плейсхолдеры (год < 1900, типа Apple 1604-...).
   const m = raw.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return undefined;
   const year = Number(m[1]);
@@ -244,6 +278,61 @@ function parseBirthday(raw: string): string | undefined {
 function extractFromUrl(url: string, pattern: RegExp): string | undefined {
   const m = url.match(pattern);
   return m && m[1] ? decodeURIComponent(m[1]) : undefined;
+}
+
+function isPlaceholder(s: string): boolean {
+  const t = s.trim().toLowerCase();
+  return t === "" || t === "null" || t === "undefined";
+}
+
+function cleanAddrPart(s: string | undefined): string | undefined {
+  if (s === undefined) return undefined;
+  if (isPlaceholder(s)) return undefined;
+  return s.trim();
+}
+
+function parseAddress(
+  prop: RawProperty,
+  groupLabels: Map<string, string>,
+): ParsedAddress | null {
+  // ADR: PO-Box;Extended;Street;City;Region;PostalCode;Country
+  const fields = prop.value.split(";").map((s) => cleanAddrPart(s));
+  if (fields.every((f) => !f)) return null;
+  const street = fields[2];
+  const city = fields[3];
+  const region = fields[4];
+  const postalCode = fields[5];
+  const country = fields[6];
+  // Extended (fields[1]) и PO-Box (fields[0]) — игнорируем как редкие, но добавляем к street если street пустой
+  const streetCombined =
+    street ?? cleanAddrPart(fields[1]) ?? cleanAddrPart(fields[0]);
+  const components = [streetCombined, city, region, postalCode, country].filter(
+    (c): c is string => !!c,
+  );
+  const formatted = components.join(", ");
+  if (!formatted) return null;
+  return {
+    street: streetCombined,
+    city,
+    region,
+    postalCode,
+    country,
+    formatted,
+    kind: inferAddressKind(prop),
+    label: inferLabel(prop, groupLabels),
+  };
+}
+
+function parseGeo(prop: RawProperty): { lat: number; lng: number } | null {
+  // vCard 3: GEO:43.6043;1.4437
+  // vCard 4: GEO:geo:43.6043,1.4437
+  let v = prop.value.trim();
+  if (v.toLowerCase().startsWith("geo:")) v = v.slice(4);
+  const parts = v.split(/[;,]/).map((s) => s.trim());
+  const lat = Number(parts[0]);
+  const lng = Number(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
 }
 
 function extractSocialProfile(
@@ -280,10 +369,7 @@ function extractSocialProfile(
         handle || extractFromUrl(url, /(?:twitter|x)\.com\/([^?/\s]+)/i);
       break;
     case "whatsapp":
-      // Apple записывает x-user как `x-apple:%XX%XX…` с двоеточием в значении,
-      // что ломает стандартный парсинг vCard. WhatsApp identity всё равно
-      // надёжно слипнется с реальным импортом через PhoneNumber matching,
-      // поэтому не плодим шумные identity из vCard.
+      // см. CLAUDE.md — Apple-формат x-apple:%XX… ломает vCard structure
       return null;
     case "instagram":
       sourceId =
@@ -298,14 +384,80 @@ function extractSocialProfile(
   }
 
   if (!sourceId) return null;
+  return { service, sourceId, handle, url: url || undefined };
+}
 
+function parseImpp(prop: RawProperty): ParsedSocialProfile | null {
+  // IMPP;X-SERVICE-TYPE=Skype:skype:vasya123
+  // или IMPP:xmpp:user@host
+  const value = prop.value.trim();
+  if (!value) return null;
+  const serviceParam = getParamFirst(prop, "X-SERVICE-TYPE");
+  const colonIdx = value.indexOf(":");
+  const schemePart = colonIdx === -1 ? undefined : value.slice(0, colonIdx).toLowerCase();
+  const idPart = colonIdx === -1 ? value : value.slice(colonIdx + 1);
+  const service = (serviceParam ?? schemePart ?? "impp").toLowerCase();
+  const sourceId = idPart.trim();
+  if (!sourceId) return null;
   return {
     service,
     sourceId,
-    handle,
-    url: url || undefined,
+    handle: sourceId,
+    url: value,
   };
 }
+
+const MESSENGER_PROPS: Record<string, string> = {
+  "X-AIM": "aim",
+  "X-SKYPE": "skype",
+  "X-MSN": "msn",
+  "X-JABBER": "xmpp",
+  "X-ICQ": "icq",
+  "X-YAHOO": "yahoo",
+  "X-GTALK": "gtalk",
+  "X-GADUGADU": "gadugadu",
+};
+
+function parseMessengerProperty(prop: RawProperty): ParsedSocialProfile | null {
+  const service = MESSENGER_PROPS[prop.name];
+  if (!service) return null;
+  const sourceId = prop.value.trim();
+  if (!sourceId) return null;
+  return { service, sourceId, handle: sourceId };
+}
+
+function parseFbUrl(prop: RawProperty): ParsedSocialProfile | null {
+  const url = prop.value.trim();
+  if (!url) return null;
+  const handle = extractFromUrl(url, /facebook\.com\/([^?/\s]+)/i);
+  if (!handle) return null;
+  return { service: "facebook", sourceId: handle, handle, url };
+}
+
+// Свойства, которые мы целенаправленно НЕ логируем как unknown (служебные/обработанные).
+const KNOWN_OR_IGNORED = new Set<string>([
+  // Структура vCard
+  "BEGIN", "END", "VERSION", "PRODID", "REV", "UID",
+  // Парсятся как основные поля
+  "FN", "N", "ORG", "TITLE", "NOTE", "BDAY", "TEL", "EMAIL", "URL",
+  "NICKNAME", "CATEGORIES", "ADR", "GEO",
+  // Парсятся в ContactIdentity
+  "X-SOCIALPROFILE", "IMPP", "FBURL",
+  "X-AIM", "X-SKYPE", "X-MSN", "X-JABBER", "X-ICQ", "X-YAHOO", "X-GTALK", "X-GADUGADU",
+  // Парсятся в attributes
+  "ROLE", "GENDER", "LANG", "TZ",
+  "X-PHONETIC-FIRST-NAME", "X-PHONETIC-LAST-NAME", "X-MAIDENNAME",
+  "X-ABSHOWAS", "X-ABRELATEDNAMES", "X-ABDATE",
+  // Лейбл-помощник
+  "X-ABLABEL",
+  // Игнор по дизайну
+  "PHOTO", "LOGO", "SOUND", "KEY", "AGENT", "CLASS",
+  "SOURCE", "NAME", "MAILER", "LABEL",
+  "X-IMAGETYPE", "X-IMAGEHASH", "X-SHARED-PHOTO-DISPLAY-PREF",
+  "VND-63-SENSITIVE-CONTENT-CONFIG",
+  // Apple internal blobs (base64 binary, no semantic value)
+  "X-ADDRESSING-GRAMMAR",
+]);
 
 function parseBlock(
   propertyLines: string[],
@@ -332,10 +484,16 @@ function parseBlock(
   let title: string | undefined;
   let note: string | undefined;
   let birthday: string | undefined;
+  let nickname: string | undefined;
   const phones: ParsedPhone[] = [];
   const emails: ParsedEmail[] = [];
   const urls: ParsedUrl[] = [];
   const socialProfiles: ParsedSocialProfile[] = [];
+  const addresses: ParsedAddress[] = [];
+  const categories: string[] = [];
+  const attributes: ParsedAttribute[] = [];
+  const unknownProperties: UnknownProperty[] = [];
+  let pendingGeo: { lat: number; lng: number } | undefined;
 
   for (const p of props) {
     switch (p.name) {
@@ -347,6 +505,14 @@ function parseBlock(
         break;
       case "N":
         if (p.value.trim()) n = p.value;
+        break;
+      case "NICKNAME":
+        if (!nickname && p.value.trim()) {
+          nickname = p.value
+            .split(",")
+            .map((s) => s.trim())
+            .find((s) => s.length > 0);
+        }
         break;
       case "ORG":
         if (p.value.trim()) {
@@ -384,13 +550,107 @@ function parseBlock(
         if (u) urls.push({ url: u, label: inferLabel(p, groupLabels) });
         break;
       }
+      case "FBURL": {
+        const sp = parseFbUrl(p);
+        if (sp) socialProfiles.push(sp);
+        break;
+      }
       case "X-SOCIALPROFILE": {
         const sp = extractSocialProfile(p);
         if (sp) socialProfiles.push(sp);
         break;
       }
-      default:
+      case "IMPP": {
+        const sp = parseImpp(p);
+        if (sp) socialProfiles.push(sp);
         break;
+      }
+      case "ADR": {
+        const addr = parseAddress(p, groupLabels);
+        if (addr) addresses.push(addr);
+        break;
+      }
+      case "GEO": {
+        const g = parseGeo(p);
+        if (g) pendingGeo = g;
+        break;
+      }
+      case "CATEGORIES": {
+        for (const c of p.value.split(",")) {
+          const t = c.trim();
+          if (t) categories.push(t);
+        }
+        break;
+      }
+      case "ROLE":
+        if (p.value.trim()) attributes.push({ key: "role", value: p.value.trim() });
+        break;
+      case "GENDER":
+        if (p.value.trim()) attributes.push({ key: "gender", value: p.value.trim() });
+        break;
+      case "LANG":
+        if (p.value.trim()) attributes.push({ key: "lang", value: p.value.trim() });
+        break;
+      case "TZ":
+        if (p.value.trim()) attributes.push({ key: "tz", value: p.value.trim() });
+        break;
+      case "X-PHONETIC-FIRST-NAME":
+        if (p.value.trim()) attributes.push({ key: "phonetic_first_name", value: p.value.trim() });
+        break;
+      case "X-PHONETIC-LAST-NAME":
+        if (p.value.trim()) attributes.push({ key: "phonetic_last_name", value: p.value.trim() });
+        break;
+      case "X-MAIDENNAME":
+        if (p.value.trim()) attributes.push({ key: "maiden_name", value: p.value.trim() });
+        break;
+      case "X-ABSHOWAS":
+        if (p.value.trim()) attributes.push({ key: "show_as", value: p.value.trim().toLowerCase() });
+        break;
+      case "X-ABRELATEDNAMES":
+        if (p.value.trim()) {
+          attributes.push({
+            key: "related_name",
+            value: p.value.trim(),
+            label: inferLabel(p, groupLabels),
+          });
+        }
+        break;
+      case "X-ABDATE":
+        if (p.value.trim()) {
+          attributes.push({
+            key: "anniversary",
+            value: p.value.trim(),
+            label: inferLabel(p, groupLabels),
+          });
+        }
+        break;
+      default: {
+        if (MESSENGER_PROPS[p.name]) {
+          const sp = parseMessengerProperty(p);
+          if (sp) socialProfiles.push(sp);
+          break;
+        }
+        if (!KNOWN_OR_IGNORED.has(p.name)) {
+          unknownProperties.push({ property: p.name, rawLine: p.rawLine });
+        }
+        break;
+      }
+    }
+  }
+
+  // Привязка GEO: если есть адрес — координаты к первому без них; иначе создаём фантомный адрес.
+  if (pendingGeo) {
+    const target = addresses.find((a) => a.latitude === undefined);
+    if (target) {
+      target.latitude = pendingGeo.lat;
+      target.longitude = pendingGeo.lng;
+    } else {
+      addresses.push({
+        formatted: `${pendingGeo.lat}, ${pendingGeo.lng}`,
+        kind: "other",
+        latitude: pendingGeo.lat,
+        longitude: pendingGeo.lng,
+      });
     }
   }
 
@@ -400,16 +660,20 @@ function parseBlock(
     !displayName &&
     phones.length === 0 &&
     emails.length === 0 &&
-    socialProfiles.length === 0
+    socialProfiles.length === 0 &&
+    addresses.length === 0
   ) {
     return null;
   }
 
-  // Дедупликация внутри блока
   const dedupedPhones = dedupBy(phones, (p) => p.number);
   const dedupedEmails = dedupBy(emails, (e) => e.address.toLowerCase());
   const dedupedUrls = dedupBy(urls, (u) => u.url);
   const dedupedSocial = dedupBy(socialProfiles, (s) => `${s.service}:${s.sourceId}`);
+  const dedupedAddresses = dedupBy(addresses, (a) => a.formatted);
+  const dedupedCategories = Array.from(
+    new Set(categories.map((c) => c.toLowerCase())),
+  ).map((lc) => categories.find((orig) => orig.toLowerCase() === lc) ?? lc);
 
   const finalUid =
     uid && uid.length > 0
@@ -423,10 +687,15 @@ function parseBlock(
   return {
     uid: finalUid,
     displayName: displayName || "Без имени",
+    nickname,
     phones: dedupedPhones,
     emails: dedupedEmails,
     urls: dedupedUrls,
     socialProfiles: dedupedSocial,
+    addresses: dedupedAddresses,
+    categories: dedupedCategories,
+    attributes,
+    unknownProperties,
     rawData: rawBlock,
     org,
     title,
@@ -448,7 +717,7 @@ function dedupBy<T>(arr: T[], key: (item: T) => string): T[] {
 }
 
 export function parseVCard(content: string): ParsedVCard[] {
-  // Unfold continuation lines: a CRLF/LF followed by SP/TAB joins to previous line.
+  // Unfold continuation lines.
   const unfolded = content.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
 
   const lines = unfolded.split(/\r?\n/);

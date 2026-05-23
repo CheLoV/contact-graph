@@ -12,6 +12,7 @@ datasource db {
 model Contact {
   id           String    @id @default(cuid())
   displayName  String
+  nickname     String?
   notes        String?
   organization String?
   title        String?
@@ -26,6 +27,8 @@ model Contact {
   phoneNumbers  PhoneNumber[]
   emails        Email[]
   urls          ContactUrl[]
+  addresses     ContactAddress[]
+  attributes    ContactAttribute[]
   chatMembers   ChatMember[]
   tagsOnContact ContactTag[]
 
@@ -71,6 +74,42 @@ model ContactUrl {
   contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   @@index([contactId])
+}
+
+model ContactAddress {
+  id         String   @id @default(cuid())
+  contactId  String
+  street     String?
+  city       String?
+  region     String?
+  postalCode String?
+  country    String?
+  formatted  String // полная человекочитаемая строка для отображения и дедупа
+  kind       String   @default("other") // 'home' | 'work' | 'other'
+  label      String? // кастомный лейбл из X-ABLabel
+  latitude   Float?
+  longitude  Float?
+  createdAt  DateTime @default(now())
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@index([city])
+  @@index([country])
+}
+
+model ContactAttribute {
+  id        String   @id @default(cuid())
+  contactId String
+  key       String // 'phonetic_first_name' | 'maiden_name' | 'gender' | 'role' | 'lang' | 'tz' | 'show_as' | 'related_name' | 'anniversary' | ...
+  value     String
+  label     String? // например тип отношения для related_name ('mother', 'spouse')
+  createdAt DateTime @default(now())
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@index([key])
 }
 
 model PhoneNumber {

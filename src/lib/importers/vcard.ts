@@ -1,6 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import type { ParsedSocialProfile, ParsedVCard } from "@/lib/parsers/vcard";
+import type {
+  ParsedSocialProfile,
+  ParsedVCard,
+} from "@/lib/parsers/vcard";
 
 export type ImportError = {
   uid?: string;
@@ -14,16 +17,17 @@ export type ImportResult = {
   updated: number;
   skipped: number;
   errors: ImportError[];
+  // Сводка по vCard-свойствам, которые парсер не знает — на сигнал «расширить поддержку».
+  unknownProperties: {
+    blocksAffected: number;
+    counts: Record<string, number>;
+  };
 };
 
 const BATCH_SIZE = 100;
 const ORPHAN_THRESHOLD_MS = 5 * 60 * 1000;
 const TX_TIMEOUT_MS = 30_000;
 
-/**
- * Помечает зависшие импорт-джобы (running > 5 минут) как failed.
- * Вызывается перед стартом нового импорта — защита от крашей процесса.
- */
 export async function reapOrphanedJobs(source = "vcard"): Promise<number> {
   const cutoff = new Date(Date.now() - ORPHAN_THRESHOLD_MS);
   const { count } = await db.importJob.updateMany({
@@ -59,7 +63,19 @@ export async function importVCards(
     updated: 0,
     skipped: 0,
     errors: [],
+    unknownProperties: { blocksAffected: 0, counts: {} },
   };
+
+  // Агрегируем unknownProperties на уровне всего импорта.
+  for (const item of parsed) {
+    if (item.unknownProperties.length > 0) {
+      result.unknownProperties.blocksAffected += 1;
+      for (const u of item.unknownProperties) {
+        result.unknownProperties.counts[u.property] =
+          (result.unknownProperties.counts[u.property] ?? 0) + 1;
+      }
+    }
+  }
 
   try {
     for (let start = 0; start < parsed.length; start += BATCH_SIZE) {
@@ -131,8 +147,9 @@ async function upsertOne(
   });
 
   const rawDataJson = JSON.stringify({ raw: item.rawData });
-  const contactFields: Prisma.ContactUpdateInput = {
+  const contactData = {
     displayName: item.displayName,
+    nickname: item.nickname ?? null,
     notes: item.note ?? null,
     organization: item.org ?? null,
     title: item.title ?? null,
@@ -145,7 +162,7 @@ async function upsertOne(
     contactId = existing.contactId;
     await tx.contact.update({
       where: { id: contactId },
-      data: contactFields,
+      data: contactData,
     });
     await tx.contactIdentity.update({
       where: { id: existing.id },
@@ -158,20 +175,15 @@ async function upsertOne(
     await syncPhones(tx, contactId, item.phones);
     await syncEmails(tx, contactId, item.emails);
     await syncUrls(tx, contactId, item.urls);
+    await syncAddresses(tx, contactId, item.addresses);
+    await syncAttributes(tx, contactId, item.attributes);
+    await syncCategories(tx, contactId, item.categories);
     await syncSocialIdentities(tx, contactId, item, result);
     result.updated += 1;
     return;
   }
 
-  const contact = await tx.contact.create({
-    data: {
-      displayName: item.displayName,
-      notes: item.note ?? null,
-      organization: item.org ?? null,
-      title: item.title ?? null,
-      birthday: item.birthday ? new Date(`${item.birthday}T00:00:00Z`) : null,
-    },
-  });
+  const contact = await tx.contact.create({ data: contactData });
   contactId = contact.id;
   await tx.contactIdentity.create({
     data: {
@@ -212,6 +224,36 @@ async function upsertOne(
         kind: "website",
       })),
     });
+  }
+  if (item.addresses.length > 0) {
+    await tx.contactAddress.createMany({
+      data: item.addresses.map((a) => ({
+        contactId,
+        street: a.street,
+        city: a.city,
+        region: a.region,
+        postalCode: a.postalCode,
+        country: a.country,
+        formatted: a.formatted,
+        kind: a.kind,
+        label: a.label,
+        latitude: a.latitude,
+        longitude: a.longitude,
+      })),
+    });
+  }
+  if (item.attributes.length > 0) {
+    await tx.contactAttribute.createMany({
+      data: item.attributes.map((a) => ({
+        contactId,
+        key: a.key,
+        value: a.value,
+        label: a.label,
+      })),
+    });
+  }
+  if (item.categories.length > 0) {
+    await syncCategories(tx, contactId, item.categories);
   }
   await syncSocialIdentities(tx, contactId, item, result);
   result.created += 1;
@@ -287,6 +329,83 @@ async function syncUrls(
   }
 }
 
+async function syncAddresses(
+  tx: Prisma.TransactionClient,
+  contactId: string,
+  addresses: ParsedVCard["addresses"],
+): Promise<void> {
+  if (addresses.length === 0) return;
+  const existing = await tx.contactAddress.findMany({
+    where: { contactId },
+    select: { formatted: true },
+  });
+  const have = new Set(existing.map((a) => a.formatted));
+  const toAdd = addresses.filter((a) => !have.has(a.formatted));
+  if (toAdd.length > 0) {
+    await tx.contactAddress.createMany({
+      data: toAdd.map((a) => ({
+        contactId,
+        street: a.street,
+        city: a.city,
+        region: a.region,
+        postalCode: a.postalCode,
+        country: a.country,
+        formatted: a.formatted,
+        kind: a.kind,
+        label: a.label,
+        latitude: a.latitude,
+        longitude: a.longitude,
+      })),
+    });
+  }
+}
+
+async function syncAttributes(
+  tx: Prisma.TransactionClient,
+  contactId: string,
+  attributes: ParsedVCard["attributes"],
+): Promise<void> {
+  if (attributes.length === 0) return;
+  // Дедуп по (key, value, label) — иначе при re-import будут множиться дубли.
+  const existing = await tx.contactAttribute.findMany({
+    where: { contactId },
+    select: { key: true, value: true, label: true },
+  });
+  const key = (k: string, v: string, l: string | null | undefined) =>
+    `${k} ${v} ${l ?? ""}`;
+  const have = new Set(existing.map((a) => key(a.key, a.value, a.label)));
+  const toAdd = attributes.filter((a) => !have.has(key(a.key, a.value, a.label)));
+  if (toAdd.length > 0) {
+    await tx.contactAttribute.createMany({
+      data: toAdd.map((a) => ({
+        contactId,
+        key: a.key,
+        value: a.value,
+        label: a.label,
+      })),
+    });
+  }
+}
+
+async function syncCategories(
+  tx: Prisma.TransactionClient,
+  contactId: string,
+  categories: string[],
+): Promise<void> {
+  for (const name of categories) {
+    const tag = await tx.tag.upsert({
+      where: { name },
+      create: { name },
+      update: {},
+    });
+    await tx.contactTag.upsert({
+      where: { contactId_tagId: { contactId, tagId: tag.id } },
+      create: { contactId, tagId: tag.id },
+      update: {},
+    });
+  }
+}
+
 async function syncSocialIdentities(
   tx: Prisma.TransactionClient,
   contactId: string,
@@ -314,9 +433,6 @@ async function upsertSocialIdentity(
   });
   if (existing) {
     if (existing.contactId !== contactId) {
-      // Этот социал-профиль уже привязан к ДРУГОМУ Contact —
-      // потенциальный сигнал, что два Contact'а на самом деле один человек.
-      // Сейчас не сливаем (это День 9), просто фиксируем как warning.
       result.errors.push({
         uid: item.uid,
         displayName: item.displayName,
@@ -324,7 +440,6 @@ async function upsertSocialIdentity(
       });
       return;
     }
-    // Это re-import — обновляем, но не понижаем confidence imported → self_reported.
     await tx.contactIdentity.update({
       where: { id: existing.id },
       data: {
