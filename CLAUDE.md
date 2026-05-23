@@ -26,11 +26,52 @@ Next.js 16 (App Router, Turbopack), TypeScript strict (`noUncheckedIndexedAccess
 ## Структура папок
 
 - `src/app/` — роуты + API
-- `src/lib/db.ts` — БД, `src/lib/api.ts` — хелперы, `src/lib/validators/` — Zod, `src/lib/parsers/` — парсеры файлов (будут добавлены)
+- `src/lib/db.ts` — БД, `src/lib/api.ts` — хелперы, `src/lib/validators/` — Zod
+- `src/lib/parsers/` — парсеры файлов (vCard, далее Telegram JSON и т.д.)
+- `src/lib/importers/` — слой выше парсеров: пишут в БД, ведут ImportJob
 - `src/components/layout/` — `Sidebar`, `Header`, `PageHeader`
+- `src/components/import/` — карточки источников импорта (`ImportSourceCard`, `VCardImportCard`)
 - `src/components/ui/` — shadcn компоненты
 - `prisma/schema.prisma` — модель данных
 - `sample-data/` — личные тестовые данные (в `.gitignore`)
+
+## Парсеры и импортеры
+
+Двухслойная архитектура для всех импортов:
+
+1. **Парсер** (`src/lib/parsers/<source>.ts`) — чистая функция: текст файла → массив структурированных объектов. Ничего не пишет в БД, не знает о Prisma. Подходит для unit-тестирования.
+2. **Импортер** (`src/lib/importers/<source>.ts`) — принимает массив от парсера и пишет в БД батчами по 100 в отдельных транзакциях, обновляя `ImportJob.processed`. Сам ничего не парсит.
+
+API роут (`src/app/api/import/<source>/route.ts`) связывает их: парсит файлы синхронно, регистрирует `ImportJob`, запускает импортёр **fire-and-forget** и возвращает `jobId`. UI пуллит прогресс через `GET /api/import/<source>?jobId=...`.
+
+### Контракт vCard
+
+Тип `ParsedVCard` — см. `src/lib/parsers/vcard.ts`.
+
+Особенности vCard, которые покрывает парсер:
+- Свёрнутые строки (continuation lines): склеиваются перед разбором.
+- `ENCODING=QUOTED-PRINTABLE`: декодируется в UTF-8.
+- Apple-группы свойств `item1.TEL` + `item1.X-ABLabel:_$!<Mobile>!$_`: лейбл из X-ABLabel перебивает TYPE.
+- `UID` может отсутствовать (в наших iCloud-экспортах его нет ни у одного контакта) — фолбэк = `sha256(displayName + первый телефон + первый email)`. Это даёт стабильный id для дедупликации между повторными импортами.
+- Телефоны нормализуются через `libphonenumber-js` к E.164 с дефолтным регионом `RU` (переопределяется через `DEFAULT_PHONE_REGION`); если не парсится — сохраняется сырое значение.
+- `PHOTO` игнорируется.
+
+### Дедупликация при повторном импорте
+
+Идентификатор связи vCard ↔ БД — пара `(ContactIdentity.source='vcard', sourceId=UID)`. При повторном импорте того же файла:
+- существующая identity — обновляется `displayName`, `rawData`; **добавляются недостающие** телефоны/email (старые не трогаются, чтобы не терять данные из других источников).
+- новой identity нет — создаются `Contact + ContactIdentity + PhoneNumber[] + Email[]` в одной транзакции батча.
+
+## Известные ограничения архитектуры
+
+### Fire-and-forget импорты
+
+POST `/api/import/<source>` стартует импорт в фоне (внутри того же Node-процесса) и сразу возвращает `jobId`. Клиент опрашивает прогресс через GET. Это даёт реальный прогресс-бар и не требует очереди, но имеет ограничения:
+
+- **Работает только на single-process Node** (`next dev`, классический `next start` за reverse-proxy на одной машине).
+- **Не работает на serverless** (Vercel и т.п.): фоновый промис будет убит после возврата HTTP-ответа. Когда дойдём до prod — нужно переписать на очередь: отдельный воркер читает `ImportJob` со `status='pending'`. Кандидаты: Inngest, Trigger.dev, BullMQ + Redis, либо своя минимальная реализация через cron + БД.
+- **Hot-reload в dev обрывает текущий импорт.** Это норма для разработки.
+- **Защита от сирот:** перед стартом каждого нового импорта `reapOrphanedJobs()` помечает все `ImportJob` со `status='running'` старше 5 минут как `failed`. Это очищает зависшие задачи после краша процесса или hot-reload.
 
 ## Известные особенности окружения
 
