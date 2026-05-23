@@ -1,0 +1,186 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  displayName String
+  notes       String?
+  isArchived  Boolean  @default(false)
+  // communityId заполнится позже алгоритмом кластеризации
+  communityId Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  identities    ContactIdentity[]
+  phoneNumbers  PhoneNumber[]
+  emails        Email[]
+  chatMembers   ChatMember[]
+  tagsOnContact ContactTag[]
+
+  // связи: contact A и contact B; для нормализации храним только пары где aId < bId
+  relationshipsA Relationship[] @relation("RelationshipA")
+  relationshipsB Relationship[] @relation("RelationshipB")
+
+  @@index([isArchived])
+  @@index([displayName])
+}
+
+model ContactIdentity {
+  id          String   @id @default(cuid())
+  contactId   String
+  source      String // 'vcard' | 'telegram' | 'whatsapp' | 'linkedin' | 'facebook' | 'manual'
+  sourceId    String // UID из vCard, user_id из Telegram и т.п.
+  handle      String? // username (@vasya), telegram username, и т.д.
+  displayName String? // имя в источнике (может отличаться от Contact.displayName)
+  rawData     String? // JSON-строка с оригинальными данными источника (для отладки и будущего разбора)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  contact         Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  messagesSent    Message[]
+  chatMemberships ChatMember[]
+
+  @@unique([source, sourceId])
+  @@index([contactId])
+  @@index([handle])
+}
+
+model PhoneNumber {
+  id        String  @id @default(cuid())
+  contactId String
+  number    String // нормализованный E.164 если возможно, иначе сырой
+  label     String? // 'mobile' | 'work' | 'home' | etc.
+  isPrimary Boolean @default(false)
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([number])
+  @@index([contactId])
+}
+
+model Email {
+  id        String  @id @default(cuid())
+  contactId String
+  address   String
+  label     String?
+  isPrimary Boolean @default(false)
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([address])
+  @@index([contactId])
+}
+
+model Chat {
+  id          String   @id @default(cuid())
+  source      String // 'telegram' | 'whatsapp' | ...
+  sourceId    String // chat_id из исходной системы
+  title       String?
+  type        String // 'direct' | 'group' | 'channel' | 'supergroup'
+  isArchived  Boolean  @default(false)
+  memberCount Int? // кэш для быстрых выборок
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members  ChatMember[]
+  messages Message[]
+
+  @@unique([source, sourceId])
+  @@index([type])
+  @@index([isArchived])
+}
+
+model ChatMember {
+  id         String @id @default(cuid())
+  chatId     String
+  identityId String
+
+  chat     Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  identity ContactIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  // удобно ходить от участника к контакту: identity.contact
+  // но добавим denormalization для производительности
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@unique([chatId, identityId])
+  @@index([identityId])
+  @@index([contactId])
+}
+
+model Message {
+  id               String   @id @default(cuid())
+  chatId           String
+  senderIdentityId String?
+  sentAt           DateTime
+  text             String
+  sourceMessageId  String // оригинальный id из источника
+
+  chat   Chat             @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender ContactIdentity? @relation(fields: [senderIdentityId], references: [id], onDelete: SetNull)
+
+  @@unique([chatId, sourceMessageId])
+  @@index([sentAt])
+  @@index([senderIdentityId])
+}
+
+model Relationship {
+  id        String   @id @default(cuid())
+  // нормализация: всегда aId < bId по алфавиту cuid, чтобы пара хранилась один раз
+  aId       String
+  bId       String
+  type      String // 'co_member' | 'manual' | 'mentioned' | 'knows' | 'friend' | 'family' | 'colleague' | 'classmate' | 'partner'
+  strength  Int      @default(1)
+  source    String? // 'auto' | 'manual'
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  a Contact @relation("RelationshipA", fields: [aId], references: [id], onDelete: Cascade)
+  b Contact @relation("RelationshipB", fields: [bId], references: [id], onDelete: Cascade)
+
+  @@unique([aId, bId, type])
+  @@index([aId])
+  @@index([bId])
+  @@index([type])
+  @@index([strength])
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String   @default("#888888")
+  createdAt DateTime @default(now())
+
+  contacts ContactTag[]
+}
+
+model ContactTag {
+  contactId String
+  tagId     String
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, tagId])
+  @@index([tagId])
+}
+
+// ImportJob — для отслеживания идущих импортов (на будущее)
+model ImportJob {
+  id         String    @id @default(cuid())
+  source     String // 'vcard' | 'telegram' | ...
+  status     String // 'pending' | 'running' | 'done' | 'failed'
+  total      Int       @default(0)
+  processed  Int       @default(0)
+  errors     String? // JSON массив ошибок
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+}
