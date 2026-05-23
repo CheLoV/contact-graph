@@ -10,18 +10,22 @@ datasource db {
 }
 
 model Contact {
-  id          String   @id @default(cuid())
-  displayName String
-  notes       String?
-  isArchived  Boolean  @default(false)
+  id           String    @id @default(cuid())
+  displayName  String
+  notes        String?
+  organization String?
+  title        String?
+  birthday     DateTime?
+  isArchived   Boolean   @default(false)
   // communityId заполнится позже алгоритмом кластеризации
-  communityId Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  communityId  Int?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   identities    ContactIdentity[]
   phoneNumbers  PhoneNumber[]
   emails        Email[]
+  urls          ContactUrl[]
   chatMembers   ChatMember[]
   tagsOnContact ContactTag[]
 
@@ -36,10 +40,13 @@ model Contact {
 model ContactIdentity {
   id          String   @id @default(cuid())
   contactId   String
-  source      String // 'vcard' | 'telegram' | 'whatsapp' | 'linkedin' | 'facebook' | 'manual'
+  source      String // 'vcard' | 'telegram' | 'whatsapp' | 'linkedin' | 'facebook' | 'vk' | 'twitter' | 'manual'
   sourceId    String // UID из vCard, user_id из Telegram и т.п.
   handle      String? // username (@vasya), telegram username, и т.д.
   displayName String? // имя в источнике (может отличаться от Contact.displayName)
+  // 'imported' — реальный импорт из источника с богатыми данными;
+  // 'self_reported' — записанная пользователем ссылка (vCard X-SOCIALPROFILE)
+  confidence  String   @default("imported")
   rawData     String? // JSON-строка с оригинальными данными источника (для отладки и будущего разбора)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -51,6 +58,19 @@ model ContactIdentity {
   @@unique([source, sourceId])
   @@index([contactId])
   @@index([handle])
+  @@index([confidence])
+}
+
+model ContactUrl {
+  id        String  @id @default(cuid())
+  contactId String
+  url       String
+  label     String?
+  kind      String  @default("website") // 'website' | 'other'
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
 }
 
 model PhoneNumber {
