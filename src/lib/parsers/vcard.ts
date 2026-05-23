@@ -256,12 +256,32 @@ function cleanAppleLabel(raw: string): string {
   return raw.replace(/^_\$!<(.*)>!\$_$/, "$1").trim();
 }
 
-function stableUid(
-  displayName: string,
-  firstPhone: string | undefined,
-  firstEmail: string | undefined,
-): string {
-  const key = [displayName, firstPhone ?? "", firstEmail ?? ""].join("|");
+type StableUidInputs = {
+  displayName: string;
+  phones: string[]; // нормализованные значения
+  emails: string[]; // как в файле, lowercased
+  org?: string;
+  title?: string;
+  birthday?: string;
+  firstAddressFormatted?: string;
+};
+
+function stableUid(inputs: StableUidInputs): string {
+  // Включаем максимум стабильно-идентифицирующих полей, чтобы исключить
+  // ложные слияния двух разных людей с одинаковым именем. Все опциональные
+  // поля → пустая строка если отсутствуют. Phones/emails отсортированы,
+  // чтобы порядок в файле не влиял на хэш.
+  const phones = [...inputs.phones].sort().join(",");
+  const emails = [...inputs.emails.map((e) => e.toLowerCase())].sort().join(",");
+  const key = [
+    inputs.displayName,
+    phones,
+    emails,
+    inputs.org ?? "",
+    inputs.title ?? "",
+    inputs.birthday ?? "",
+    inputs.firstAddressFormatted ?? "",
+  ].join("|");
   return (
     "sha256:" + createHash("sha256").update(key).digest("hex").slice(0, 32)
   );
@@ -678,11 +698,15 @@ function parseBlock(
   const finalUid =
     uid && uid.length > 0
       ? uid
-      : stableUid(
+      : stableUid({
           displayName,
-          dedupedPhones[0]?.number,
-          dedupedEmails[0]?.address,
-        );
+          phones: dedupedPhones.map((p) => p.number),
+          emails: dedupedEmails.map((e) => e.address),
+          org,
+          title,
+          birthday,
+          firstAddressFormatted: dedupedAddresses[0]?.formatted,
+        });
 
   return {
     uid: finalUid,

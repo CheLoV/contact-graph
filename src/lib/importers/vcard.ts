@@ -85,8 +85,16 @@ export async function importVCards(
     },
   };
 
-  // Агрегируем unknownProperties и enrichment по всем item'ам.
+  // Дедуп по UID до подсчёта enrichment: если файл содержит два идентичных
+  // vCard блока (типично для iCloud-синка с нескольких устройств), считаем
+  // их как один — иначе цифры в сводке расходятся с тем что реально в БД.
+  const uniqueByUid = new Map<string, ParsedVCard>();
   for (const item of parsed) {
+    if (!uniqueByUid.has(item.uid)) uniqueByUid.set(item.uid, item);
+  }
+
+  // Агрегируем unknownProperties и enrichment по дедуплицированным item'ам.
+  for (const item of uniqueByUid.values()) {
     if (item.unknownProperties.length > 0) {
       result.unknownProperties.blocksAffected += 1;
       for (const u of item.unknownProperties) {
