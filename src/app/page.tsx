@@ -1,7 +1,10 @@
 import { Users, MessageSquare, MessagesSquare, Network } from "lucide-react";
+import { db } from "@/lib/db";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import type { LucideIcon } from "lucide-react";
+
+export const dynamic = "force-dynamic";
 
 type Tile = {
   title: string;
@@ -9,14 +12,18 @@ type Tile = {
   value: string;
 };
 
-const tiles: Tile[] = [
-  { title: "Контакты", icon: Users, value: "—" },
-  { title: "Чаты", icon: MessageSquare, value: "—" },
-  { title: "Сообщения", icon: MessagesSquare, value: "—" },
-  { title: "Связи", icon: Network, value: "—" },
-];
+export default async function HomePage() {
+  const contactCount = await db.contact.count({
+    where: { isArchived: false },
+  });
 
-export default function HomePage() {
+  const tiles: Tile[] = [
+    { title: "Контакты", icon: Users, value: contactCount.toLocaleString("ru-RU") },
+    { title: "Чаты", icon: MessageSquare, value: "—" },
+    { title: "Сообщения", icon: MessagesSquare, value: "—" },
+    { title: "Связи", icon: Network, value: "—" },
+  ];
+
   return (
     <div className="space-y-6">
       <PageHeader
