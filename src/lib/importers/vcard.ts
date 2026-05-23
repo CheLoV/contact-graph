@@ -147,7 +147,8 @@ async function upsertOne(
   });
 
   const rawDataJson = JSON.stringify({ raw: item.rawData });
-  const contactData = {
+  // Полный набор полей — используется при CREATE. Пустые поля → null (ok, контакт новый).
+  const contactCreateData = {
     displayName: item.displayName,
     nickname: item.nickname ?? null,
     notes: item.note ?? null,
@@ -155,6 +156,19 @@ async function upsertOne(
     title: item.title ?? null,
     birthday: item.birthday ? new Date(`${item.birthday}T00:00:00Z`) : null,
   };
+  // На UPDATE-пути защищаемся от перетирания ненулевых полей пустыми.
+  // У нас файл с хэш-фолбэк UID'ами — повторное «обнаружение» того же контакта через
+  // коллизию хэша не должно стирать данные, заполненные первым прохождением.
+  const contactUpdateData: Record<string, unknown> = {
+    displayName: item.displayName,
+  };
+  if (item.nickname) contactUpdateData.nickname = item.nickname;
+  if (item.note) contactUpdateData.notes = item.note;
+  if (item.org) contactUpdateData.organization = item.org;
+  if (item.title) contactUpdateData.title = item.title;
+  if (item.birthday) {
+    contactUpdateData.birthday = new Date(`${item.birthday}T00:00:00Z`);
+  }
 
   let contactId: string;
 
@@ -162,7 +176,7 @@ async function upsertOne(
     contactId = existing.contactId;
     await tx.contact.update({
       where: { id: contactId },
-      data: contactData,
+      data: contactUpdateData,
     });
     await tx.contactIdentity.update({
       where: { id: existing.id },
@@ -183,7 +197,7 @@ async function upsertOne(
     return;
   }
 
-  const contact = await tx.contact.create({ data: contactData });
+  const contact = await tx.contact.create({ data: contactCreateData });
   contactId = contact.id;
   await tx.contactIdentity.create({
     data: {
