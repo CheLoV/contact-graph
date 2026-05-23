@@ -26,10 +26,25 @@ import { cn } from "@/lib/utils";
 
 type Phase = "idle" | "uploading" | "importing" | "done" | "error";
 
+type JobSummary = {
+  created: number;
+  updated: number;
+  skipped: number;
+  enrichment: {
+    addresses: number;
+    urls: number;
+    socialProfiles: number;
+    organizations: number;
+    titles: number;
+    tags: number;
+  };
+};
+
 type JobSnapshot = {
   status: "pending" | "running" | "done" | "failed";
   total: number;
   processed: number;
+  summary?: JobSummary | null;
 };
 
 const POLL_INTERVAL_MS = 500;
@@ -162,6 +177,7 @@ export function VCardImportCard() {
           status: snap.status,
           total: snap.total,
           processed: snap.processed,
+          summary: snap.summary ?? null,
         });
         if (snap.status === "done") {
           stopPolling();
@@ -294,8 +310,34 @@ export function VCardImportCard() {
             <AlertTitle>Импорт завершён</AlertTitle>
             <AlertDescription>
               <p>
-                Обработано: <strong>{snapshot.processed}</strong> контактов.
+                Обработано: <strong>{snapshot.processed}</strong> контактов
+                {snapshot.summary
+                  ? ` (новых ${snapshot.summary.created}, обновлено ${snapshot.summary.updated}${
+                      snapshot.summary.skipped > 0
+                        ? `, пропущено ${snapshot.summary.skipped}`
+                        : ""
+                    }).`
+                  : "."}
               </p>
+              {snapshot.summary ? (
+                <p className="mt-2 text-sm">
+                  Обогащение:{" "}
+                  <strong>{snapshot.summary.enrichment.addresses}</strong>{" "}
+                  адресов,{" "}
+                  <strong>{snapshot.summary.enrichment.urls}</strong> URL,{" "}
+                  <strong>
+                    {snapshot.summary.enrichment.socialProfiles}
+                  </strong>{" "}
+                  соцпрофилей,{" "}
+                  <strong>
+                    {snapshot.summary.enrichment.organizations}
+                  </strong>{" "}
+                  компаний,{" "}
+                  <strong>{snapshot.summary.enrichment.titles}</strong>{" "}
+                  должностей,{" "}
+                  <strong>{snapshot.summary.enrichment.tags}</strong> тегов.
+                </p>
+              ) : null}
               <div className="mt-3 flex gap-2">
                 <Link
                   href="/contacts"

@@ -240,6 +240,7 @@ model ImportJob {
   total      Int       @default(0)
   processed  Int       @default(0)
   errors     String? // JSON массив ошибок
+  summary    String? // JSON-сводка обогащения (см. ImportResult.enrichment)
   startedAt  DateTime  @default(now())
   finishedAt DateTime?
 }

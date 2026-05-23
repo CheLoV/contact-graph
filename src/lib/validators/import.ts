@@ -27,6 +27,28 @@ export const importStartResponseSchema = z.object({
   }),
 });
 
+export const importEnrichmentSchema = z.object({
+  addresses: z.number(),
+  urls: z.number(),
+  socialProfiles: z.number(),
+  organizations: z.number(),
+  titles: z.number(),
+  tags: z.number(),
+});
+
+export const importSummarySchema = z.object({
+  created: z.number(),
+  updated: z.number(),
+  skipped: z.number(),
+  enrichment: importEnrichmentSchema,
+  unknownProperties: z
+    .object({
+      blocksAffected: z.number(),
+      counts: z.record(z.string(), z.number()),
+    })
+    .optional(),
+});
+
 export const importStatusResponseSchema = z.object({
   ok: z.literal(true),
   data: z.object({
@@ -34,6 +56,7 @@ export const importStatusResponseSchema = z.object({
     total: z.number(),
     processed: z.number(),
     errors: z.unknown().nullable(),
+    summary: importSummarySchema.nullable().optional(),
     startedAt: z.union([z.string(), z.date()]).nullable(),
     finishedAt: z.union([z.string(), z.date()]).nullable(),
   }),

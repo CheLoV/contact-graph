@@ -103,6 +103,7 @@ export async function GET(req: NextRequest) {
     total: job.total,
     processed: job.processed,
     errors: job.errors ? (JSON.parse(job.errors) as unknown) : null,
+    summary: job.summary ? (JSON.parse(job.summary) as unknown) : null,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
   });

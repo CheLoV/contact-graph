@@ -11,6 +11,15 @@ export type ImportError = {
   reason: string;
 };
 
+export type ImportEnrichment = {
+  addresses: number;
+  urls: number;
+  socialProfiles: number;
+  organizations: number;
+  titles: number;
+  tags: number;
+};
+
 export type ImportResult = {
   total: number;
   created: number;
@@ -22,6 +31,8 @@ export type ImportResult = {
     blocksAffected: number;
     counts: Record<string, number>;
   };
+  // Сколько обогащения принёс этот импорт (по данным из файла).
+  enrichment: ImportEnrichment;
 };
 
 const BATCH_SIZE = 100;
@@ -64,9 +75,17 @@ export async function importVCards(
     skipped: 0,
     errors: [],
     unknownProperties: { blocksAffected: 0, counts: {} },
+    enrichment: {
+      addresses: 0,
+      urls: 0,
+      socialProfiles: 0,
+      organizations: 0,
+      titles: 0,
+      tags: 0,
+    },
   };
 
-  // Агрегируем unknownProperties на уровне всего импорта.
+  // Агрегируем unknownProperties и enrichment по всем item'ам.
   for (const item of parsed) {
     if (item.unknownProperties.length > 0) {
       result.unknownProperties.blocksAffected += 1;
@@ -75,6 +94,12 @@ export async function importVCards(
           (result.unknownProperties.counts[u.property] ?? 0) + 1;
       }
     }
+    result.enrichment.addresses += item.addresses.length;
+    result.enrichment.urls += item.urls.length;
+    result.enrichment.socialProfiles += item.socialProfiles.length;
+    if (item.org) result.enrichment.organizations += 1;
+    if (item.title) result.enrichment.titles += 1;
+    result.enrichment.tags += item.categories.length;
   }
 
   try {
@@ -111,6 +136,13 @@ export async function importVCards(
         errors: result.errors.length
           ? JSON.stringify(result.errors)
           : null,
+        summary: JSON.stringify({
+          created: result.created,
+          updated: result.updated,
+          skipped: result.skipped,
+          enrichment: result.enrichment,
+          unknownProperties: result.unknownProperties,
+        }),
       },
     });
   } catch (err) {
