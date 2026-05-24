@@ -1,6 +1,7 @@
-import { MessageCircle, Send, Briefcase, Users } from "lucide-react";
+import { MessageCircle, Briefcase, Users } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { VCardImportCard } from "@/components/import/VCardImportCard";
+import { TelegramImportCard } from "@/components/import/TelegramImportCard";
 import { ImportSourceCard } from "@/components/import/ImportSourceCard";
 
 export default function ImportPage() {
@@ -12,13 +13,7 @@ export default function ImportPage() {
       />
       <div className="grid gap-4 md:grid-cols-2">
         <VCardImportCard />
-        <ImportSourceCard
-          icon={Send}
-          title="Telegram"
-          description="Выгрузка JSON из Telegram Desktop"
-          comingSoon
-          comingSoonHint="День 3: разбор chats/users/messages.json"
-        />
+        <TelegramImportCard />
         <ImportSourceCard
           icon={MessageCircle}
           title="WhatsApp"

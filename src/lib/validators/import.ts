@@ -79,3 +79,37 @@ export const telegramImportRequestSchema = z.object({
   jsonPath: z.string().min(1).optional(),
 });
 export type TelegramImportRequest = z.infer<typeof telegramImportRequestSchema>;
+
+// Telegram import — GET status response (richer than the generic one;
+// includes currentPhase and the multi-phase summary).
+export const telegramImportStatusResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({
+    status: z.enum(["pending", "running", "done", "failed"]),
+    currentPhase: z.string().nullable(),
+    total: z.number(),
+    processed: z.number(),
+    errors: z.unknown().nullable(),
+    summary: z.unknown().nullable().optional(),
+    startedAt: z.union([z.string(), z.date()]).nullable(),
+    finishedAt: z.union([z.string(), z.date()]).nullable(),
+  }),
+});
+
+export const telegramImportStatusResponse = z.union([
+  telegramImportStatusResponseSchema,
+  apiErrorResponseSchema,
+]);
+
+export const telegramImportStartResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({
+    jobId: z.string(),
+    mode: z.enum(["api", "historical", "all"]),
+  }),
+});
+
+export const telegramImportStartResponse = z.union([
+  telegramImportStartResponseSchema,
+  apiErrorResponseSchema,
+]);
