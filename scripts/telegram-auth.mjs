@@ -22,6 +22,20 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
+// Hard-fail if stdin isn't a real TTY. Without this guard, running the
+// script through a background runner (Claude Code Bash tool, CI, nohup, …)
+// makes input.text() block forever waiting on a stdin that will never
+// arrive — and any keystrokes the user types end up wherever they're
+// typing, not in the script. Catch that early with a loud error.
+if (!process.stdin.isTTY) {
+  console.error("❌ ERROR: This script requires an interactive terminal.");
+  console.error("");
+  console.error("DO NOT run via Claude Code Bash tool or any background runner.");
+  console.error("Run it from a real terminal: open a new VS Code terminal (Terminal → New)");
+  console.error("and execute: node scripts/telegram-auth.mjs");
+  process.exit(2);
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = path.resolve(__dirname, "..", ".env");
 const ENV_BACKUP_PATH = path.resolve(__dirname, "..", ".env.backup");
