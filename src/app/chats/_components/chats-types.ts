@@ -17,6 +17,7 @@ export const chatRowSelect = {
   usernames: true,
   slowmodeSeconds: true,
   isArchived: true,
+  linkedToContactId: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ChatSelect;

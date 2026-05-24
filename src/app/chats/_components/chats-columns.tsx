@@ -35,6 +35,19 @@ function formatDate(d: Date | string | null): string {
   return `${day}.${month}.${year}`;
 }
 
+function primaryUsername(usernamesJson: string | null): string | null {
+  if (!usernamesJson) return null;
+  try {
+    const arr: unknown = JSON.parse(usernamesJson);
+    if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === "string") {
+      return arr[0];
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 function formatSeconds(s: number | null): string {
   if (s === null || s === undefined) return "—";
   if (s === 0) return "0";
@@ -92,6 +105,18 @@ export const chatColumns: DataTableColumnDef<ChatRow>[] = [
     ),
   },
   {
+    id: "username",
+    header: "@username",
+    accessor: (r) => primaryUsername(r.usernames),
+    sortable: true,
+    defaultVisible: true,
+    cell: (r) => {
+      const u = primaryUsername(r.usernames);
+      if (!u) return <span className="text-muted-foreground">—</span>;
+      return <span className="font-mono text-sm">@{u}</span>;
+    },
+  },
+  {
     id: "description",
     header: "Описание",
     accessor: (r) => r.description,
@@ -102,7 +127,7 @@ export const chatColumns: DataTableColumnDef<ChatRow>[] = [
         className="block max-w-md text-sm text-muted-foreground"
         title={r.description ?? undefined}
       >
-        {truncate(r.description, 100) || "—"}
+        {truncate(r.description, 50) || "—"}
       </span>
     ),
   },
@@ -123,12 +148,27 @@ export const chatColumns: DataTableColumnDef<ChatRow>[] = [
     header: "Публичный",
     accessor: (r) => (r.isPublic ? 1 : 0),
     sortable: true,
-    defaultVisible: false,
+    defaultVisible: true,
     cell: (r) => (
       <span className="text-sm text-muted-foreground">
         {r.isPublic ? "да" : "—"}
       </span>
     ),
+  },
+  {
+    id: "linkedTo",
+    header: "Привязан к",
+    accessor: (r) => (r.linkedToContactId ? 1 : 0),
+    sortable: true,
+    defaultVisible: false,
+    cell: (r) =>
+      r.linkedToContactId ? (
+        <Badge variant="outline" className="font-normal text-xs">
+          personal channel
+        </Badge>
+      ) : (
+        <span className="text-muted-foreground">—</span>
+      ),
   },
   {
     id: "hasPhoto",
