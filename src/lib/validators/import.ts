@@ -71,3 +71,11 @@ export const importStatusResponse = z.union([
   importStatusResponseSchema,
   apiErrorResponseSchema,
 ]);
+
+// Telegram import — POST body
+export const telegramImportRequestSchema = z.object({
+  mode: z.enum(["api", "historical", "all"]),
+  // optional path override for JSON-historical mode (defaults to sample-data path)
+  jsonPath: z.string().min(1).optional(),
+});
+export type TelegramImportRequest = z.infer<typeof telegramImportRequestSchema>;
