@@ -51,6 +51,7 @@ sample-data/
 # sqlite (Prisma dev database)
 prisma/dev.db
 prisma/dev.db-journal
+prisma/dev.db.before-*
 *.db
 *.db-journal
 

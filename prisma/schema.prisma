@@ -74,6 +74,26 @@ model ContactIdentity {
   // 'recently' | 'within_week' | 'within_month' | 'long_ago' | 'hidden' | 'online'
   lastSeenStatus   String?
 
+  // Timestamp of the last successful (or attempted) users.GetFullUser call.
+  // NULL = never tried — Phase 3 enrichment looks at this for resumability.
+  // Set on both success AND failure (deleted/banned/restricted users) so we
+  // don't retry the same dead user every time.
+  enrichedAt DateTime?
+
+  // If the user has a personal channel attached to the profile (Premium
+  // feature), this stores the Chat.sourceId of that channel.
+  personalChannelChatId String?
+
+  // How we learned about this identity:
+  //   'contacts_api'      — contacts.GetContacts (real Telegram contact)
+  //   'direct_chat'       — discovered via getUsers because we have a chat with them
+  //   'json_addressbook'  — only in JSON addressbook (no live TG account)
+  //   'self'              — me (telegram_self)
+  //   'self_reported'     — from vCard X-SOCIALPROFILE (legacy)
+  //   'mention'           — reserved for future
+  //   'group_member'      — reserved for День групп
+  discoverySource String?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -88,6 +108,8 @@ model ContactIdentity {
   @@index([superseded])
   @@index([isBot])
   @@index([isPremium])
+  @@index([enrichedAt])
+  @@index([discoverySource])
 }
 
 model ContactUrl {
@@ -188,6 +210,10 @@ model Chat {
   usernames         String? // JSON-массив у каналов с несколькими public usernames
   slowmodeSeconds   Int?
   migratedFromChatId String? // если supergroup пришла из обычной группы
+
+  // For personal channels (Premium feature) — which Contact this channel
+  // belongs to. NULL for normal groups/channels you joined.
+  linkedToContactId String?
 
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
