@@ -59,3 +59,11 @@ prisma/dev.db-journal
 *.session
 session.txt
 
+# Photo + binary storage (downloaded from Telegram / future sources)
+# Keep the directory itself via .gitkeep but ignore its contents.
+storage/*
+!storage/.gitkeep
+!storage/*/
+storage/*/*
+!storage/*/.gitkeep
+
