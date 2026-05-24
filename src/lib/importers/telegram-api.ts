@@ -14,7 +14,6 @@
 import { Api } from "telegram";
 import type { TelegramClient } from "telegram";
 import bigInt from "big-integer";
-import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -25,13 +24,12 @@ import { getTelegramClient } from "@/lib/telegram/client";
 import { withRateLimit, RateLimitError } from "@/lib/telegram/rate-limit";
 import { parseApiUser, parseApiUserFull, safeJsonable } from "@/lib/parsers/telegram-api";
 import type { ApiUserData } from "@/lib/telegram/types";
+import { normalizePhone } from "@/lib/phone";
 
 // -------- Configuration --------
 
 const PHOTO_DIR =
   process.env.TELEGRAM_PHOTO_DIR ?? path.resolve("storage/telegram-photos");
-const DEFAULT_PHONE_REGION =
-  (process.env.DEFAULT_PHONE_REGION as "RU" | undefined) ?? "RU";
 const ENRICHMENT_BATCH = 25;
 // Photo downloads stay sequential within the enrichment loop; the global
 // rate-limit throttle is the bottleneck anyway. If we ever want parallelism
@@ -98,22 +96,6 @@ export type ProgressCallback = (
 const noopProgress: ProgressCallback = async () => {};
 
 // -------- Helpers --------
-
-function normalizePhone(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const trimmed = String(raw).trim();
-  if (!trimmed) return null;
-  // libphonenumber expects either '+' or region hint.
-  // Telegram API phone is digits-only without '+'. Try with leading '+'
-  // first (it's international format), then fallback to region hint.
-  if (/^\d+$/.test(trimmed)) {
-    const withPlus = parsePhoneNumberFromString("+" + trimmed, DEFAULT_PHONE_REGION);
-    if (withPlus && withPlus.isValid()) return withPlus.number;
-  }
-  const direct = parsePhoneNumberFromString(trimmed, DEFAULT_PHONE_REGION);
-  if (direct && direct.isValid()) return direct.number;
-  return null;
-}
 
 function photoFileIdFor(userId: string, photoId: string, dcId: number): string {
   return createHash("sha256")
