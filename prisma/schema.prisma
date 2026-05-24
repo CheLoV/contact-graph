@@ -139,15 +139,20 @@ model Email {
 }
 
 model Chat {
-  id          String   @id @default(cuid())
-  source      String // 'telegram' | 'whatsapp' | ...
-  sourceId    String // chat_id из исходной системы
-  title       String?
-  type        String // 'direct' | 'group' | 'channel' | 'supergroup'
-  isArchived  Boolean  @default(false)
-  memberCount Int? // кэш для быстрых выборок
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String    @id @default(cuid())
+  source         String // 'telegram' | 'whatsapp' | ...
+  sourceId       String // chat_id из исходной системы
+  title          String?
+  // 'direct' | 'group' | 'channel' | 'supergroup' | 'self' (saved_messages — чат с самим собой)
+  type           String
+  isArchived     Boolean   @default(false)
+  memberCount    Int? // кэш для быстрых выборок
+  // Кэш по сообщениям: считается импортёром, потом используется
+  // для recency-фильтров и расчёта силы связи (День 6).
+  messageCount   Int       @default(0)
+  lastMessageAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   members  ChatMember[]
   messages Message[]
@@ -155,6 +160,7 @@ model Chat {
   @@unique([source, sourceId])
   @@index([type])
   @@index([isArchived])
+  @@index([lastMessageAt])
 }
 
 model ChatMember {
@@ -234,13 +240,16 @@ model ContactTag {
 
 // ImportJob — для отслеживания идущих импортов (на будущее)
 model ImportJob {
-  id         String    @id @default(cuid())
-  source     String // 'vcard' | 'telegram' | ...
-  status     String // 'pending' | 'running' | 'done' | 'failed'
-  total      Int       @default(0)
-  processed  Int       @default(0)
-  errors     String? // JSON массив ошибок
-  summary    String? // JSON-сводка обогащения (см. ImportResult.enrichment)
-  startedAt  DateTime  @default(now())
-  finishedAt DateTime?
+  id           String    @id @default(cuid())
+  source       String // 'vcard' | 'telegram' | ...
+  status       String // 'pending' | 'running' | 'done' | 'failed'
+  total        Int       @default(0)
+  processed    Int       @default(0)
+  // Текущая фаза для многофазных импортов (Telegram: parse → contacts → chats → messages → shared).
+  // total/processed относятся к текущей фазе, не ко всему импорту.
+  currentPhase String?
+  errors       String? // JSON массив ошибок
+  summary      String? // JSON-сводка обогащения (см. ImportResult.enrichment)
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
 }

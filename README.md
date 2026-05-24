@@ -6,6 +6,10 @@
 
 Next.js 16 (App Router), TypeScript (strict + `noUncheckedIndexedAccess`), TailwindCSS v4, shadcn/ui, Prisma 6, SQLite, Zod, react-hook-form, next-themes, sonner.
 
+## Большие импорты и heap
+
+`npm run dev` явно поднимает Node heap до 4 GB через `NODE_OPTIONS='--max-old-space-size=4096'`. Это нужно для импортов вроде Telegram-экспорта: один `result.json` весит ~150 МБ на диске, но после `JSON.parse` в памяти живёт ~600 МБ (плюс Prisma-кэш, Next.js, парсер). Без поднятого лимита dev-процесс ловит OOM на середине импорта.
+
 ## Запуск локально / в Codespace
 
 1. `npm install`
