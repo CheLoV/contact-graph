@@ -31,6 +31,7 @@ model Contact {
   attributes    ContactAttribute[]
   chatMembers   ChatMember[]
   tagsOnContact ContactTag[]
+  commonChats   CommonChat[]
 
   // связи: contact A и contact B; для нормализации храним только пары где aId < bId
   relationshipsA Relationship[] @relation("RelationshipA")
@@ -43,14 +44,36 @@ model Contact {
 model ContactIdentity {
   id          String   @id @default(cuid())
   contactId   String
-  source      String // 'vcard' | 'telegram' | 'whatsapp' | 'linkedin' | 'facebook' | 'vk' | 'twitter' | 'manual'
-  sourceId    String // UID из vCard, user_id из Telegram и т.п.
+  // 'vcard' | 'telegram' | 'telegram_self' | 'telegram_addressbook' | 'telegram_shared'
+  // | 'whatsapp' | 'linkedin' | 'facebook' | 'vk' | 'twitter' | 'manual'
+  source      String
+  sourceId    String // UID из vCard, user_id из Telegram, sha256(phone) для addressbook
   handle      String? // username (@vasya), telegram username, и т.д.
   displayName String? // имя в источнике (может отличаться от Contact.displayName)
   // 'imported' — реальный импорт из источника с богатыми данными;
-  // 'self_reported' — записанная пользователем ссылка (vCard X-SOCIALPROFILE)
+  // 'self_reported' — записанная пользователем ссылка (vCard X-SOCIALPROFILE);
+  // 'observed' — зарезервировано для «День групп» (увиденные участники чужих групп)
   confidence  String   @default("imported")
+  // true если эта identity была заменена более достоверной (например
+  // telegram_addressbook → telegram). Не удаляется, остаётся как
+  // исторический след для будущих ручных проверок.
+  superseded  Boolean  @default(false)
   rawData     String? // JSON-строка с оригинальными данными источника (для отладки и будущего разбора)
+
+  // Telegram (и в будущем другие сети) enrichment fields:
+  bio              String?
+  photoFileId      String? // короткий sha256-хэш имени файла в storage/<source>-photos/<id>.jpg
+  businessHours    String? // JSON-строка (Premium business hours)
+  businessLocation String? // JSON-строка (Premium business location)
+  isVerified       Boolean @default(false)
+  isPremium        Boolean @default(false)
+  isBot            Boolean @default(false)
+  isScam           Boolean @default(false)
+  isFake           Boolean @default(false)
+  commonChatsCount Int?
+  // 'recently' | 'within_week' | 'within_month' | 'long_ago' | 'hidden' | 'online'
+  lastSeenStatus   String?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -62,6 +85,9 @@ model ContactIdentity {
   @@index([contactId])
   @@index([handle])
   @@index([confidence])
+  @@index([superseded])
+  @@index([isBot])
+  @@index([isPremium])
 }
 
 model ContactUrl {
@@ -140,27 +166,42 @@ model Email {
 
 model Chat {
   id             String    @id @default(cuid())
-  source         String // 'telegram' | 'whatsapp' | ...
+  source         String // 'telegram' | 'whatsapp' | 'linkedin' | 'slack' | ...
   sourceId       String // chat_id из исходной системы
   title          String?
   // 'direct' | 'group' | 'channel' | 'supergroup' | 'self' (saved_messages — чат с самим собой)
   type           String
   isArchived     Boolean   @default(false)
-  memberCount    Int? // кэш для быстрых выборок
+  memberCount    Int? // полное число участников (даже если мы не enumerate'им их)
   // Кэш по сообщениям: считается импортёром, потом используется
   // для recency-фильтров и расчёта силы связи (День 6).
   messageCount   Int       @default(0)
   lastMessageAt  DateTime?
+
+  // Группо-чатовые метаданные (Day 3-A: импортируются для groups/channels через getFullChannel).
+  description       String?
+  inviteLink        String? // только если ты admin
+  isPublic          Boolean @default(false)
+  photoFileId       String? // <hash>.jpg в storage/telegram-photos/
+  megagroup         Boolean @default(false) // true для megagroup (>200), false для канала
+  creationDate      DateTime?
+  usernames         String? // JSON-массив у каналов с несколькими public usernames
+  slowmodeSeconds   Int?
+  migratedFromChatId String? // если supergroup пришла из обычной группы
+
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  members  ChatMember[]
-  messages Message[]
+  members     ChatMember[]
+  messages    Message[]
+  commonWith  CommonChat[]
 
   @@unique([source, sourceId])
   @@index([type])
   @@index([isArchived])
   @@index([lastMessageAt])
+  @@index([source])
+  @@index([memberCount])
 }
 
 model ChatMember {
@@ -178,6 +219,26 @@ model ChatMember {
   @@unique([chatId, identityId])
   @@index([identityId])
   @@index([contactId])
+}
+
+// CommonChat — общие чаты между контактом и пользователем («Me»).
+// Day 3-A: таблица создаётся пустой (зарезервирована для «День групп»),
+// потому что для импорта participants групп нужна отдельная архитектурная
+// сессия — Contact ≠ ChatParticipant.
+//
+// Будущая семантика: «У контакта X со мной N общих групп»
+// (где common = я в чате И контакт X в чате).
+model CommonChat {
+  id        String @id @default(cuid())
+  contactId String
+  chatId    String
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, chatId])
+  @@index([contactId])
+  @@index([chatId])
 }
 
 model Message {
