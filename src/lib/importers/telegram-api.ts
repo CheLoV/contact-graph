@@ -56,12 +56,12 @@ export type TelegramApiImportResult = {
   identitiesPromoted: number;
   conflicts: IdentityConflict[];
   // Phase 3 — enrichment counters
-  enrichmentSkippedBots: number;
   enrichmentSkippedAlreadyDone: number;
   enrichmentSucceeded: number;
   enrichmentFailed: number;
   photosDownloaded: number;
   photosSkippedExisting: number;
+  personalChannelsLinked: number;
   // Misc
   errors: Array<{ phase: string; reason: string }>;
 };
@@ -75,12 +75,12 @@ export function emptyApiResult(): TelegramApiImportResult {
     contactsCreatedNoPhone: 0,
     identitiesPromoted: 0,
     conflicts: [],
-    enrichmentSkippedBots: 0,
     enrichmentSkippedAlreadyDone: 0,
     enrichmentSucceeded: 0,
     enrichmentFailed: 0,
     photosDownloaded: 0,
     photosSkippedExisting: 0,
+    personalChannelsLinked: 0,
     errors: [],
   };
 }
@@ -126,8 +126,9 @@ export async function importMe(
 ): Promise<{ myUserId: string }> {
   await onProgress("phase_1_me", 0, 1);
 
+  const inputSelf = await withRateLimit(() => client.getInputEntity("me"));
   const resp = await withRateLimit(() =>
-    client.invoke(new Api.users.GetFullUser({ id: new Api.InputUserSelf() })),
+    client.invoke(new Api.users.GetFullUser({ id: inputSelf })),
   );
   const fullUser = resp.fullUser;
   const meUser = resp.users.find(
@@ -176,7 +177,7 @@ export async function importMe(
   });
   const photoFileId = await maybeDownloadPhoto(
     client,
-    new Api.InputPeerSelf(),
+    meUser,
     parsed,
     result,
   );
@@ -190,6 +191,7 @@ export async function importMe(
       handle: parsed.username,
       displayName: fullDisplayName,
       confidence: "imported",
+      discoverySource: "self",
       rawData,
       bio: parsedFull.about,
       photoFileId,
@@ -200,12 +202,14 @@ export async function importMe(
       isFake: parsed.isFake,
       lastSeenStatus: parsed.lastSeenStatus,
       commonChatsCount: parsedFull.commonChatsCount,
+      enrichedAt: new Date(),
     },
     update: {
       contactId,
       handle: parsed.username,
       displayName: fullDisplayName,
       confidence: "imported",
+      discoverySource: "self",
       rawData,
       bio: parsedFull.about,
       photoFileId: photoFileId ?? undefined,
@@ -216,6 +220,7 @@ export async function importMe(
       isFake: parsed.isFake,
       lastSeenStatus: parsed.lastSeenStatus,
       commonChatsCount: parsedFull.commonChatsCount,
+      enrichedAt: new Date(),
     },
   });
 
@@ -292,6 +297,7 @@ async function upsertApiContactIdentity(
   // Existing identity for this Telegram user_id?
   const existingByUserId = await db.contactIdentity.findUnique({
     where: { source_sourceId: { source: "telegram", sourceId: parsed.userId } },
+    select: { id: true, contactId: true, discoverySource: true },
   });
 
   // Phone-bridge: find Contact by normalized phone.
@@ -367,6 +373,9 @@ async function upsertApiContactIdentity(
         confidence: "imported",
         displayName: fullDisplayName,
         handle: parsed.username,
+        // Only set discoverySource if it's still null — don't downgrade
+        // an explicitly-set value (e.g. 'direct_chat' from Phase 5d).
+        discoverySource: existingByUserId.discoverySource ?? "contacts_api",
         rawData: rawDataLite,
         isVerified: parsed.isVerified,
         isPremium: parsed.isPremium,
@@ -411,6 +420,7 @@ async function upsertApiContactIdentity(
       handle: parsed.username,
       displayName: fullDisplayName,
       confidence: "imported",
+      discoverySource: "contacts_api",
       rawData: rawDataLite,
       isVerified: parsed.isVerified,
       isPremium: parsed.isPremium,
@@ -425,113 +435,213 @@ async function upsertApiContactIdentity(
 
 // -------- Phase 3: enrichment --------
 
+type EnrichTargetRow = {
+  id: string;
+  sourceId: string;
+  contactId: string;
+};
+
 export async function enrichApiContacts(
   client: TelegramClient,
-  identityIdByUserId: Map<string, string>,
   result: TelegramApiImportResult,
   onProgress: ProgressCallback = noopProgress,
 ): Promise<void> {
   await ensurePhotoDir();
-  const total = identityIdByUserId.size;
+
+  // Resumability via enrichedAt marker: NULL means "never tried".
+  // We set it on both success AND failure so we don't re-try the same
+  // dead/banned/restricted user every run.
+  const targets: EnrichTargetRow[] = await db.contactIdentity.findMany({
+    where: { source: "telegram", enrichedAt: null },
+    select: { id: true, sourceId: true, contactId: true },
+  });
+  const total = targets.length;
+  result.enrichmentSkippedAlreadyDone =
+    (await db.contactIdentity.count({
+      where: { source: "telegram", enrichedAt: { not: null } },
+    })) || 0;
+
+  await onProgress("phase_3_enrichment", 0, total);
   if (total === 0) return;
 
-  // Pull the snapshot once — we'll skip bots and already-enriched rows.
-  const identities = await db.contactIdentity.findMany({
-    where: { id: { in: Array.from(identityIdByUserId.values()) } },
-    select: {
-      id: true,
-      sourceId: true,
-      isBot: true,
-      bio: true,
-      photoFileId: true,
-      isPremium: true,
-      lastSeenStatus: true,
-    },
-  });
-
   let processed = 0;
-  await onProgress("phase_3_enrichment", 0, total);
-
-  for (const id of identities) {
+  for (const t of targets) {
     processed += 1;
-    if (id.isBot) {
-      result.enrichmentSkippedBots += 1;
-      if (processed % ENRICHMENT_BATCH === 0) {
-        await onProgress("phase_3_enrichment", processed, total);
-      }
-      continue;
-    }
-    // Resumable: skip if bio is already set OR isPremium=true OR photo present.
-    if (
-      (id.bio && id.bio.length > 0) ||
-      id.photoFileId ||
-      id.lastSeenStatus !== null
-    ) {
-      result.enrichmentSkippedAlreadyDone += 1;
-      if (processed % ENRICHMENT_BATCH === 0) {
-        await onProgress("phase_3_enrichment", processed, total);
-      }
-      continue;
-    }
-
-    try {
-      const entity = await withRateLimit(() =>
-        client.getEntity(bigInt(id.sourceId)),
-      );
-      if (!(entity instanceof Api.User)) {
-        result.enrichmentFailed += 1;
-        continue;
-      }
-      const resp = await withRateLimit(() =>
-        client.invoke(new Api.users.GetFullUser({ id: entity })),
-      );
-      const fullUser = resp.fullUser;
-      const parsedFull = parseApiUserFull(fullUser);
-
-      const photoFileId = await maybeDownloadPhoto(
-        client,
-        entity,
-        parseApiUser(entity),
-        result,
-      );
-
-      await db.contactIdentity.update({
-        where: { id: id.id },
-        data: {
-          bio: parsedFull.about,
-          businessHours: parsedFull.businessHours
-            ? JSON.stringify(parsedFull.businessHours)
-            : null,
-          businessLocation: parsedFull.businessLocation
-            ? JSON.stringify(parsedFull.businessLocation)
-            : null,
-          commonChatsCount: parsedFull.commonChatsCount,
-          photoFileId: photoFileId ?? undefined,
-        },
-      });
-      result.enrichmentSucceeded += 1;
-    } catch (err) {
-      result.enrichmentFailed += 1;
-      const reason =
-        err instanceof RateLimitError
-          ? `RateLimit: ${err.detail.kind}`
-          : (err as Error).constructor?.name ?? "Error";
-      result.errors.push({
-        phase: "phase_3_enrichment",
-        reason: `identity=${id.id}: ${reason}`,
-      });
-      // If cumulative limit hit — abort this phase.
-      if (err instanceof RateLimitError && err.detail.kind === "cumulative_limit_exceeded") {
-        throw err;
-      }
-    }
-
+    await enrichOneIdentity(client, t, result);
     if (processed % ENRICHMENT_BATCH === 0) {
       await onProgress("phase_3_enrichment", processed, total);
     }
   }
-
   await onProgress("phase_3_enrichment", total, total);
+}
+
+// Exported so Phase 5d can reuse the exact same logic for newly-discovered users.
+export async function enrichOneIdentity(
+  client: TelegramClient,
+  target: EnrichTargetRow,
+  result: TelegramApiImportResult,
+): Promise<void> {
+  try {
+    const inputEntity = await withRateLimit(() =>
+      client.getInputEntity(bigInt(target.sourceId)),
+    );
+    const resp = await withRateLimit(() =>
+      client.invoke(new Api.users.GetFullUser({ id: inputEntity })),
+    );
+    const fullUser = resp.fullUser;
+    const parsedFull = parseApiUserFull(fullUser);
+
+    const userEntity = resp.users.find(
+      (u): u is Api.User =>
+        u instanceof Api.User && String(u.id) === target.sourceId,
+    );
+    if (!userEntity) {
+      // Got a response but no user entity — strange. Mark enrichedAt anyway
+      // so we don't loop forever, but count as failure.
+      await db.contactIdentity.update({
+        where: { id: target.id },
+        data: { enrichedAt: new Date() },
+      });
+      result.enrichmentFailed += 1;
+      return;
+    }
+    const parsedUser = parseApiUser(userEntity);
+
+    const photoFileId = await maybeDownloadPhoto(
+      client,
+      userEntity,
+      parsedUser,
+      result,
+    );
+
+    // Personal channel — Premium feature, attached to a profile.
+    const personalChannelChatId = await handlePersonalChannel(
+      client,
+      fullUser,
+      target.contactId,
+      result,
+    );
+
+    await db.contactIdentity.update({
+      where: { id: target.id },
+      data: {
+        bio: parsedFull.about,
+        businessHours: parsedFull.businessHours
+          ? JSON.stringify(parsedFull.businessHours)
+          : null,
+        businessLocation: parsedFull.businessLocation
+          ? JSON.stringify(parsedFull.businessLocation)
+          : null,
+        commonChatsCount: parsedFull.commonChatsCount,
+        photoFileId: photoFileId ?? undefined,
+        personalChannelChatId,
+        // Refresh basic flags from the fresh user entity — they can change.
+        isVerified: parsedUser.isVerified,
+        isPremium: parsedUser.isPremium,
+        isBot: parsedUser.isBot,
+        isScam: parsedUser.isScam,
+        isFake: parsedUser.isFake,
+        lastSeenStatus: parsedUser.lastSeenStatus,
+        enrichedAt: new Date(),
+      },
+    });
+    result.enrichmentSucceeded += 1;
+  } catch (err) {
+    result.enrichmentFailed += 1;
+    const reason =
+      err instanceof RateLimitError
+        ? `RateLimit: ${err.detail.kind}`
+        : (err as Error).constructor?.name ?? "Error";
+    result.errors.push({
+      phase: "phase_3_enrichment",
+      reason: `identity=${target.id}: ${reason}`,
+    });
+    // Mark as attempted so we don't retry dead/banned users forever.
+    // Cumulative rate-limit aborts the phase BEFORE marking — re-throw it.
+    if (
+      err instanceof RateLimitError &&
+      err.detail.kind === "cumulative_limit_exceeded"
+    ) {
+      throw err;
+    }
+    await db.contactIdentity
+      .update({
+        where: { id: target.id },
+        data: { enrichedAt: new Date() },
+      })
+      .catch(() => {});
+  }
+}
+
+async function handlePersonalChannel(
+  client: TelegramClient,
+  fullUser: Api.UserFull,
+  ownerContactId: string,
+  result: TelegramApiImportResult,
+): Promise<string | null> {
+  const id = fullUser.personalChannelId;
+  if (id === undefined || id === null) return null;
+  const channelSourceId = bigInt(id.toString()).toString();
+  // Already in DB? Update linkedToContactId and return.
+  const existing = await db.chat.findUnique({
+    where: { source_sourceId: { source: "telegram", sourceId: channelSourceId } },
+    select: { id: true, linkedToContactId: true },
+  });
+  if (existing) {
+    if (existing.linkedToContactId !== ownerContactId) {
+      await db.chat.update({
+        where: { id: existing.id },
+        data: { linkedToContactId: ownerContactId },
+      });
+    }
+    result.personalChannelsLinked += 1;
+    return channelSourceId;
+  }
+
+  // Try to resolve the channel as an entity and upsert it as a Chat row.
+  try {
+    const entity = await withRateLimit(() =>
+      client.getEntity(bigInt(id.toString())),
+    );
+    if (!(entity instanceof Api.Channel)) return null;
+    const isBroadcast = entity.broadcast === true;
+    const isMegagroup = entity.megagroup === true;
+    const usernames: string[] = [];
+    if (typeof entity.username === "string" && entity.username.length > 0) {
+      usernames.push(entity.username);
+    }
+    if (Array.isArray(entity.usernames)) {
+      for (const u of entity.usernames) {
+        if (u instanceof Api.Username && u.active && typeof u.username === "string") {
+          if (!usernames.includes(u.username)) usernames.push(u.username);
+        }
+      }
+    }
+    await db.chat.create({
+      data: {
+        source: "telegram",
+        sourceId: channelSourceId,
+        title: entity.title ?? null,
+        type: isMegagroup ? "supergroup" : isBroadcast ? "channel" : "group",
+        memberCount:
+          typeof entity.participantsCount === "number"
+            ? entity.participantsCount
+            : null,
+        isPublic: usernames.length > 0,
+        usernames: usernames.length > 0 ? JSON.stringify(usernames) : null,
+        megagroup: isMegagroup,
+        linkedToContactId: ownerContactId,
+      },
+    });
+    result.personalChannelsLinked += 1;
+    return channelSourceId;
+  } catch (err) {
+    result.errors.push({
+      phase: "personal_channel",
+      reason: `owner=${ownerContactId}: ${(err as Error)?.constructor?.name ?? "Error"}`,
+    });
+    return null;
+  }
 }
 
 // -------- Photo download helper --------
@@ -586,7 +696,7 @@ export async function runTelegramApiPhases123(
     result,
     onProgress,
   );
-  await enrichApiContacts(client, identityIdByUserId, result, onProgress);
+  await enrichApiContacts(client, result, onProgress);
   return { result, identityIdByUserId, myUserId };
 }
 
