@@ -34,6 +34,7 @@ yarn-error.log*
 # env files (allow .env.example, ignore real ones)
 .env
 .env*.local
+.env.backup
 !.env.example
 
 # vercel
@@ -52,3 +53,9 @@ prisma/dev.db
 prisma/dev.db-journal
 *.db
 *.db-journal
+
+# Telegram session files
+.telegram-session
+*.session
+session.txt
+
