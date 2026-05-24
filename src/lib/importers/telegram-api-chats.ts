@@ -32,6 +32,9 @@ export type ChatImportResult = {
   // Phase 5c
   membersCreated: number;
   membersSkippedUnknownCounterpart: number;
+  // user_ids of direct-chat counterparts we couldn't link to any identity —
+  // these become the input set for Phase 5d (discovery via users.getUsers).
+  skippedDirectUserIds: string[];
   errors: Array<{ phase: string; reason: string }>;
 };
 
@@ -44,6 +47,7 @@ export function emptyChatResult(): ChatImportResult {
     chatsEnrichmentFailed: 0,
     membersCreated: 0,
     membersSkippedUnknownCounterpart: 0,
+    skippedDirectUserIds: [],
     errors: [],
   };
 }
@@ -164,14 +168,12 @@ export async function enrichChats(
     processed += 1;
     try {
       if (item.raw instanceof Api.Channel) {
+        const inputChannel = await withRateLimit(() =>
+          client.getInputEntity(item.raw),
+        );
         const fullResp = await withRateLimit(() =>
           client.invoke(
-            new Api.channels.GetFullChannel({
-              channel: new Api.InputChannel({
-                channelId: item.raw.id,
-                accessHash: (item.raw as Api.Channel).accessHash ?? bigInt(0),
-              }),
-            }),
+            new Api.channels.GetFullChannel({ channel: inputChannel }),
           ),
         );
         if (fullResp.fullChat instanceof Api.ChannelFull) {
@@ -322,7 +324,9 @@ export async function importDirectChatMembers(
         });
         result.membersCreated += 1;
       } else {
+        // Truly unknown — collect for Phase 5d to look up via users.GetUsers.
         result.membersSkippedUnknownCounterpart += 1;
+        result.skippedDirectUserIds.push(counterpartUserId);
       }
       if (processed % 200 === 0)
         await onProgress("phase_5c_direct_members", processed, total);

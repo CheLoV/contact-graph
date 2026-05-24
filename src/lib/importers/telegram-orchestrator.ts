@@ -29,6 +29,10 @@ import {
   importTelegramHistorical,
   type TelegramHistoricalResult,
 } from "./telegram-json";
+import {
+  discoverSkippedDirectUsers,
+  type DiscoveryResult,
+} from "./telegram-api-discovery";
 
 export type TelegramImportMode = "api" | "historical" | "all";
 
@@ -36,6 +40,7 @@ export type TelegramImportSummary = {
   mode: TelegramImportMode;
   api: TelegramApiImportResult | null;
   chats: ChatImportResult | null;
+  discovery: DiscoveryResult | null;
   historical: TelegramHistoricalResult | null;
 };
 
@@ -82,10 +87,16 @@ export async function runTelegramImport(
 
   resetRateLimiterState();
 
+  log("");
+  log("Tip: импорт идёт 15-25 минут. Чтобы Codespaces не уснул,");
+  log("     открой второй терминал и запусти: watch -n 30 date");
+  log("");
+
   const summary: TelegramImportSummary = {
     mode,
     api: null,
     chats: null,
+    discovery: null,
     historical: null,
   };
 
@@ -106,8 +117,19 @@ export async function runTelegramImport(
     );
 
     log("Phase 3/6: enrichment");
-    await enrichApiContacts(client, identityIdByUserId, apiResult, progress);
+    await enrichApiContacts(client, apiResult, progress);
     summary.api = apiResult;
+
+    // Checkpoint between enrichment (slowest) and dialogs+members.
+    // If the latter phases die, we can restore without re-running ~2k getFullUser.
+    try {
+      const dbPath = path.resolve("prisma/dev.db");
+      const ckpt = path.resolve("prisma/dev.db.before-day3a-phase4");
+      await fs.copyFile(dbPath, ckpt);
+      log(`  [checkpoint] DB copied to prisma/dev.db.before-day3a-phase4`);
+    } catch (err) {
+      log(`  [checkpoint] WARN: could not copy DB — ${(err as Error).message}`);
+    }
 
     log("Phase 4/6: dialogs");
     const chatResult = emptyChatResult();
@@ -133,6 +155,22 @@ export async function runTelegramImport(
       );
     }
     summary.chats = chatResult;
+
+    // Phase 5d: discover the direct-chat counterparts that didn't have an
+    // identity yet. Creates Contact + ContactIdentity + enriches via
+    // getFullUser, then re-links orphan ChatMember rows.
+    if (chatResult.skippedDirectUserIds.length > 0) {
+      log(
+        `Phase 5d/6: discover skipped direct users (${chatResult.skippedDirectUserIds.length} ids)`,
+      );
+      const discovery = await discoverSkippedDirectUsers(
+        client,
+        chatResult.skippedDirectUserIds,
+        apiResult,
+        progress,
+      );
+      summary.discovery = discovery;
+    }
   }
 
   if (mode === "historical" || mode === "all") {

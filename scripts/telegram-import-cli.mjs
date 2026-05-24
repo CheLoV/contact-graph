@@ -77,6 +77,20 @@ try {
     console.log(`  membersCreated:               ${summary.chats.membersCreated}`);
     console.log(`  membersSkippedUnknown:        ${summary.chats.membersSkippedUnknownCounterpart}`);
   }
+  if (summary.discovery) {
+    console.log("Phase 5d discovery:");
+    console.log(`  skippedInputCount:            ${summary.discovery.skippedInputCount}`);
+    console.log(`  resolvedFromApi:              ${summary.discovery.resolvedFromApi}`);
+    console.log(`  failedToResolve:              ${summary.discovery.failedToResolve}`);
+    console.log(`  identitiesCreated:            ${summary.discovery.identitiesCreated}`);
+    console.log(`  mergedWithVcard:              ${summary.discovery.mergedWithVcard}`);
+    console.log(`  createdNewContact:            ${summary.discovery.createdNewContact}`);
+    console.log(`  reLinkedChatMembers:          ${summary.discovery.reLinkedChatMembers}`);
+  }
+  if (summary.api) {
+    console.log("Phase 3 enrichment outcome:");
+    console.log(`  personalChannelsLinked:       ${summary.api.personalChannelsLinked}`);
+  }
   if (summary.historical) {
     console.log("Historical (JSON):");
     console.log(`  jsonEntriesTotal:                   ${summary.historical.jsonEntriesTotal}`);
