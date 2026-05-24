@@ -13,7 +13,18 @@
 const REQUESTS_PER_SECOND = 25;
 const MAX_RETRIES = 3;
 const HARD_CAP_SECONDS = 300;
-const CUMULATIVE_LIMIT_MS = 30 * 60 * 1000;
+
+// Cumulative job-level flood-wait budget. Overridable via TELEGRAM_FLOOD_LIMIT_SEC
+// env (default: 30 minutes). Long Day 3-A imports may need 60-90 minutes.
+function readCumulativeLimitMs(): number {
+  const raw = process.env.TELEGRAM_FLOOD_LIMIT_SEC;
+  if (raw) {
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  }
+  return 30 * 60 * 1000;
+}
+const CUMULATIVE_LIMIT_MS = readCumulativeLimitMs();
 
 const recentRequestTimes: number[] = [];
 let cumulativeWaitMs = 0;
