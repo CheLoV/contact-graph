@@ -11,6 +11,8 @@ import type { ContactRow } from "./contacts-types";
 function matchesSearch(c: ContactRow, q: string): boolean {
   if (!q) return true;
   const ql = q.toLowerCase();
+  // Strip leading '@' so '@chelovru' matches handle 'chelovru'.
+  const qStripped = ql.startsWith("@") ? ql.slice(1) : ql;
   if (c.displayName.toLowerCase().includes(ql)) return true;
   if (c.nickname && c.nickname.toLowerCase().includes(ql)) return true;
   if (c.organization && c.organization.toLowerCase().includes(ql)) return true;
@@ -19,6 +21,9 @@ function matchesSearch(c: ContactRow, q: string): boolean {
   }
   for (const e of c.emails) {
     if (e.address.toLowerCase().includes(ql)) return true;
+  }
+  for (const i of c.identities) {
+    if (i.handle && i.handle.toLowerCase().includes(qStripped)) return true;
   }
   return false;
 }
@@ -48,7 +53,7 @@ export function ContactsDataTable({ contacts }: { contacts: ContactRow[] }) {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Поиск: имя, никнейм, компания, телефон, email…"
+            placeholder="Поиск: имя, никнейм, компания, телефон, email, @username…"
             className="pl-9"
           />
         </div>

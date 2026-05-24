@@ -330,4 +330,146 @@ export const contactColumns: DataTableColumnDef<ContactRow>[] = [
       </span>
     ),
   },
+
+  // ---- Telegram-enriched columns (Day 3-A fix) ----
+  {
+    id: "tgUsername",
+    header: "TG @",
+    accessor: (r) => telegramIdentity(r)?.handle ?? "",
+    sortable: true,
+    defaultVisible: true,
+    cell: (r) => {
+      const tg = telegramIdentity(r);
+      if (!tg?.handle) return <span className="text-muted-foreground">—</span>;
+      return <span className="text-sm font-mono">@{tg.handle}</span>;
+    },
+  },
+  {
+    id: "tgBio",
+    header: "Bio",
+    accessor: (r) => telegramIdentity(r)?.bio ?? "",
+    sortable: false,
+    defaultVisible: false,
+    cell: (r) => {
+      const tg = telegramIdentity(r);
+      if (!tg?.bio) return <span className="text-muted-foreground">—</span>;
+      return (
+        <span
+          className="block max-w-[20rem] text-sm text-muted-foreground"
+          title={tg.bio}
+        >
+          {truncate(tg.bio, 60)}
+        </span>
+      );
+    },
+  },
+  {
+    id: "hasPhoto",
+    header: "Фото",
+    accessor: (r) => (anyPhoto(r) ? 1 : 0),
+    sortable: true,
+    defaultVisible: false,
+    cell: (r) => (
+      <span className="text-sm">{anyPhoto(r) ? "📷" : "—"}</span>
+    ),
+  },
+  {
+    id: "premium",
+    header: "Premium",
+    accessor: (r) => (anyPremium(r) ? 1 : 0),
+    sortable: true,
+    defaultVisible: true,
+    cell: (r) => (
+      <span className="text-sm" title={anyPremium(r) ? "Telegram Premium" : ""}>
+        {anyPremium(r) ? "⭐" : "—"}
+      </span>
+    ),
+  },
+  {
+    id: "verified",
+    header: "Verified",
+    accessor: (r) => (anyVerified(r) ? 1 : 0),
+    sortable: true,
+    defaultVisible: true,
+    cell: (r) => (
+      <span
+        className="text-sm text-blue-500"
+        title={anyVerified(r) ? "Verified by Telegram" : ""}
+      >
+        {anyVerified(r) ? "✓" : "—"}
+      </span>
+    ),
+  },
+  {
+    id: "commonChats",
+    header: "Общие чаты",
+    accessor: (r) => telegramIdentity(r)?.commonChatsCount ?? 0,
+    sortable: true,
+    defaultVisible: true,
+    cell: (r) => {
+      const n = telegramIdentity(r)?.commonChatsCount;
+      if (n === null || n === undefined || n === 0)
+        return <span className="text-muted-foreground">—</span>;
+      return <span className="tabular-nums text-sm">{n}</span>;
+    },
+  },
+  {
+    id: "discoverySource",
+    header: "Откуда",
+    accessor: (r) => telegramIdentity(r)?.discoverySource ?? "",
+    sortable: true,
+    defaultVisible: false,
+    cell: (r) => {
+      const ds = telegramIdentity(r)?.discoverySource;
+      if (!ds) return <span className="text-muted-foreground">—</span>;
+      const labels: Record<string, string> = {
+        contacts_api: "контакт",
+        direct_chat: "из чата",
+        json_addressbook: "JSON",
+        self: "я",
+        self_reported: "vCard",
+        mention: "упоминание",
+        group_member: "группа",
+      };
+      return (
+        <Badge variant="outline" className="font-normal text-xs">
+          {labels[ds] ?? ds}
+        </Badge>
+      );
+    },
+  },
+  {
+    id: "phoneVisible",
+    header: "Phone виден",
+    accessor: (r) => (r.phoneNumbers.length > 0 ? 1 : 0),
+    sortable: true,
+    defaultVisible: false,
+    cell: (r) => (
+      <span className="text-sm text-muted-foreground">
+        {r.phoneNumbers.length > 0 ? "да" : "нет"}
+      </span>
+    ),
+  },
 ];
+
+function telegramIdentity(r: ContactRow) {
+  return (
+    r.identities.find(
+      (i) => i.source === "telegram" && i.confidence === "imported",
+    ) ??
+    r.identities.find((i) => i.source === "telegram_self") ??
+    null
+  );
+}
+
+function anyPhoto(r: ContactRow): boolean {
+  return r.identities.some((i) => i.photoFileId !== null);
+}
+
+function anyPremium(r: ContactRow): boolean {
+  return r.identities.some((i) => i.isPremium === true);
+}
+
+function anyVerified(r: ContactRow): boolean {
+  return r.identities.some((i) => i.isVerified === true);
+}
